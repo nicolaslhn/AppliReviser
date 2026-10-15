@@ -35,6 +35,8 @@ try {
         if ($ch)  $where[] = "q.chapitre_id = $ch";
         if ($niv) $where[] = "q.niveau = $niv";
         if ($exclude) $where[] = 'q.id NOT IN (' . implode(',', $exclude) . ')';
+        $filtre = array_filter($where, fn($w) => strpos($w, 'NOT IN') === false);
+        $total = (int)$pdo->query('SELECT COUNT(*) FROM questions q WHERE ' . implode(' AND ', $filtre))->fetchColumn();
         $q = $pdo->query(
             'SELECT q.id, q.niveau, q.enonce, c.titre AS chapitre
              FROM questions q JOIN chapitres c ON c.id = q.chapitre_id
@@ -43,6 +45,7 @@ try {
         if (!$q) out(['vide' => true]);
         $st = $pdo->prepare('SELECT id, texte FROM reponses WHERE question_id = ? ORDER BY RAND()');
         $st->execute([$q['id']]);
+        $q['total'] = $total;
         $q['reponses'] = $st->fetchAll();   // la bonne réponse n'est jamais envoyée ici
         out($q);
     }

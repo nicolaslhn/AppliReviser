@@ -55,6 +55,20 @@ h2.page{font-size:1.5rem;margin:0 0 4px}
 .explic p{margin:4px 0 12px}
 .next{background:var(--ink);color:var(--paper);border:0;border-radius:10px;padding:10px 20px;font:600 1rem inherit;font-family:inherit;cursor:pointer}
 .ok-msg{margin-top:14px;color:var(--ok);font-weight:600}
+.nav{display:flex;justify-content:space-between;align-items:center;gap:10px;margin-top:20px}
+.ghost{background:transparent;color:var(--ink);border:2px solid var(--line);border-radius:10px;padding:9px 18px;font:600 1rem inherit;font-family:inherit;cursor:pointer}
+.ghost:hover:not(:disabled){border-color:var(--teal)}
+.ghost:disabled,.next:disabled{opacity:.4;cursor:default}
+.prog{height:6px;background:var(--line);border-radius:99px;margin:0 0 16px;overflow:hidden}
+.prog i{display:block;height:100%;background:var(--teal);transition:width .25s}
+.result{text-align:center;padding:10px 0 4px}
+.result .big{font-size:3.4rem;font-weight:800;line-height:1;color:var(--teal)}
+.result .pct{color:var(--muted);margin:6px 0 14px}
+.result .comment{font-size:1.2rem;font-weight:600;margin:0 auto 18px;max-width:34ch}
+.lvl{display:flex;justify-content:center;gap:22px;flex-wrap:wrap;margin:0 0 22px}
+.lvl div{background:var(--paper);border:1px solid var(--line);border-radius:12px;padding:10px 16px}
+.lvl b{display:block;font-size:1.2rem}
+.actions{display:flex;justify-content:center;gap:10px;flex-wrap:wrap}
 .msg{padding:30px;text-align:center;color:var(--muted)}
 @media(max-width:700px){.grid.three{grid-template-columns:1fr}}
 @media(max-width:560px){.stats{margin-left:0;width:100%}.course{padding:4px 16px 18px}.schema{flex-direction:column}}
@@ -110,7 +124,7 @@ const api = (p, opt) => fetch('api.php?' + p, opt).then(r => r.json());
 const esc = t => String(t).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const stars = n => '<span class="stars" aria-label="Niveau ' + n + ' sur 3">' + '★'.repeat(n) + '<i>' + '★'.repeat(3 - n) + '</i></span>';
 
-let seen = [], score = 0, streak = 0, answered = 0, current = null, timer = null;
+let hist = [], pos = -1, total = 0, finished = false, timer = null;
 
 /* ---------- Navigation ---------- */
 let chap = null, chapters = [], courseHTML = '', mode = 'quiz', view = 'home';
@@ -141,55 +155,97 @@ function startQuiz(m) {
   mode = m;
   $('#helpbox').classList.toggle('hidden', m !== 'aide');
   if (m === 'aide') $('#help').innerHTML = courseHTML;
-  score = streak = answered = 0;
-  $('#s-score').textContent = 0; $('#s-streak').textContent = 0; $('#s-rate').textContent = '–';
   go('quiz');
   resetSession();
 }
 
-/* ---------- Quiz (défilement infini) ---------- */
-function resetSession() { seen = []; current = null; clearTimeout(timer); nextQuestion(); }
+/* ---------- Quiz ---------- */
+function resetSession() { clearTimeout(timer); hist = []; pos = -1; total = 0; finished = false; updateStats(); loadNext(); }
 $('#f-niv').onchange = resetSession;
 
-async function nextQuestion(retry) {
+function updateStats() {
+  let score = 0, streak = 0, answered = 0;
+  hist.forEach(h => { if (h.res) { answered++; if (h.res.correct) { score++; streak++; } else streak = 0; } });
+  $('#s-score').textContent = score; $('#s-streak').textContent = streak;
+  $('#s-rate').textContent = answered ? Math.round(score / answered * 100) + ' %' : '–';
+}
+
+async function loadNext() {
   clearTimeout(timer);
-  const p = new URLSearchParams({ action: 'question', chapitre: chap.id, niveau: $('#f-niv').value, exclude: seen.join(',') });
+  const p = new URLSearchParams({ action: 'question', chapitre: chap.id, niveau: $('#f-niv').value, exclude: hist.map(h => h.q.id).join(',') });
   let q;
   try { q = await api(p.toString()); } catch (e) { q = { erreur: 'Impossible de joindre le serveur.' }; }
   if (q.erreur) { $('#qcard').innerHTML = '<p class="msg">' + esc(q.erreur) + '</p>'; return; }
-  if (q.vide) {                       // toutes les questions ont été vues : on repart de zéro
-    if (retry || !seen.length) { $('#qcard').innerHTML = '<p class="msg">Aucune question pour cette sélection.</p>'; return; }
-    seen = []; return nextQuestion(true);
+  if (q.vide) {                                   // plus aucune question : on affiche le score
+    if (!hist.length) { $('#qcard').innerHTML = '<p class="msg">Aucune question pour cette sélection.</p>'; return; }
+    return showResults();
   }
-  current = q; seen.push(q.id);
+  total = +q.total;
+  hist.push({ q, choice: null, res: null });
+  pos = hist.length - 1; finished = false;
+  render();
+}
+
+function render() {
+  const h = hist[pos], q = h.q, last = pos === hist.length - 1;
+  const btns = q.reponses.map(r => {
+    let cls = '';
+    if (h.res) cls = r.id == h.res.bonne_id ? 'good' : (r.id == h.choice ? 'bad' : '');
+    return '<button data-id="' + r.id + '" class="' + cls + '"' + (h.res ? ' disabled' : '') + '>' + esc(r.texte) + '</button>';
+  }).join('');
+  let fb = '';
+  if (h.res) fb = h.res.correct ? '<p class="ok-msg">Bonne réponse !</p>'
+    : '<div class="explic"><b>Pas tout à fait.</b><p>' + esc(h.res.explication) + '</p></div>';
+  const isEnd = last && hist.length >= total;
   $('#qcard').innerHTML =
-    '<div class="qmeta"><span>' + esc(q.chapitre) + '</span>' + stars(+q.niveau) + '</div>' +
-    '<p class="enonce">' + esc(q.enonce) + '</p>' +
-    '<div class="choix">' + q.reponses.map(r => '<button data-id="' + r.id + '">' + esc(r.texte) + '</button>').join('') + '</div>' +
-    '<div id="feedback"></div>';
-  document.querySelectorAll('.choix button').forEach(b => b.onclick = () => answer(b));
-  $('.choix button').focus({ preventScroll: true });
+    '<div class="prog"><i style="width:' + Math.round((pos + 1) / total * 100) + '%"></i></div>' +
+    '<div class="qmeta"><span>Question ' + (pos + 1) + ' / ' + total + ' · ' + esc(q.chapitre) + '</span>' + stars(+q.niveau) + '</div>' +
+    '<p class="enonce">' + esc(q.enonce) + '</p><div class="choix">' + btns + '</div>' + fb +
+    '<div class="nav"><button class="ghost" id="prev"' + (pos === 0 ? ' disabled' : '') + '>← Précédente</button>' +
+    '<button class="next" id="nxt"' + (h.res ? '' : ' disabled') + '>' + (isEnd ? 'Voir mon score' : 'Suivante →') + '</button></div>';
+  if (!h.res) document.querySelectorAll('.choix button').forEach(b => b.onclick = () => answer(b));
+  $('#prev').onclick = () => { clearTimeout(timer); pos--; render(); };
+  $('#nxt').onclick = () => {
+    clearTimeout(timer);
+    if (!last) { pos++; render(); } else if (isEnd) showResults(); else loadNext();
+  };
 }
 
 async function answer(btn) {
-  const buttons = [...document.querySelectorAll('.choix button')];
-  buttons.forEach(b => b.disabled = true);
+  const h = hist[pos];
+  if (h.res || h.busy) return;
+  h.busy = true;
+  document.querySelectorAll('.choix button').forEach(b => b.disabled = true);
   const fd = new FormData();
-  fd.append('action', 'repondre'); fd.append('question_id', current.id); fd.append('reponse_id', btn.dataset.id);
+  fd.append('action', 'repondre'); fd.append('question_id', h.q.id); fd.append('reponse_id', btn.dataset.id);
   const r = await api('', { method: 'POST', body: fd });
-  answered++;
-  buttons.find(b => +b.dataset.id === r.bonne_id).classList.add('good');
-  if (r.correct) {
-    score++; streak++;
-    $('#feedback').innerHTML = '<p class="ok-msg">Bonne réponse !</p>';
-    timer = setTimeout(nextQuestion, 900);                 // on passe à la suivante automatiquement
-  } else {
-    streak = 0; btn.classList.add('bad');
-    $('#feedback').innerHTML = '<div class="explic"><b>Pas tout à fait.</b><p>' + esc(r.explication) + '</p><button class="next" id="next">Question suivante</button></div>';
-    $('#next').onclick = () => nextQuestion(); $('#next').focus();
+  h.busy = false; h.choice = +btn.dataset.id; h.res = r;
+  updateStats(); render();
+  if (r.correct) {                                // bonne réponse : on passe à la suivante automatiquement
+    const mine = h;
+    timer = setTimeout(() => { if (hist[pos] === mine && pos === hist.length - 1) $('#nxt').click(); }, 900);
   }
-  $('#s-score').textContent = score; $('#s-streak').textContent = streak;
-  $('#s-rate').textContent = Math.round(score / answered * 100) + ' %';
+}
+
+function showResults() {
+  clearTimeout(timer); finished = true;
+  const n = hist.length, ok = hist.filter(h => h.res && h.res.correct).length;
+  const pct = Math.round(ok / n * 100);
+  const msg = pct >= 90 ? 'Excellent ! Tu maîtrises ce chapitre.'
+    : pct >= 75 ? 'Très bien, il ne te manque presque rien.'
+    : pct >= 50 ? 'Pas mal, mais quelques notions sont à revoir dans le cours.'
+    : pct >= 25 ? 'Il y a du travail : relis le cours puis retente le quiz.'
+    : 'Pas de panique : relis le cours attentivement et recommence.';
+  const lv = [1, 2, 3].map(l => {
+    const g = hist.filter(h => +h.q.niveau === l);
+    return g.length ? '<div>' + stars(l) + '<b>' + g.filter(h => h.res && h.res.correct).length + ' / ' + g.length + '</b></div>' : '';
+  }).join('');
+  $('#qcard').innerHTML = '<div class="result"><div class="big">' + ok + ' / ' + n + '</div><div class="pct">' + pct + ' % de bonnes réponses</div>' +
+    '<p class="comment">' + msg + '</p><div class="lvl">' + lv + '</div>' +
+    '<div class="actions"><button class="next" id="again">Rejouer</button><button class="ghost" id="review">Revoir mes réponses</button><button class="ghost" id="tomenu">Retour au chapitre</button></div></div>';
+  $('#again').onclick = () => startQuiz(mode);
+  $('#review').onclick = () => { finished = false; pos = hist.length - 1; render(); };
+  $('#tomenu').onclick = () => go('menu');
 }
 
 /* ---------- Initialisation ---------- */
